@@ -5,15 +5,35 @@
 #include "ndt/ndt_optimization.hpp"
 #include "ndt/ndt_scan.hpp"
 
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
+
 #include <Eigen/Core>
 #include <Eigen/Dense>
 
 #include <optional>
+#include <chrono>
+#include <stdexcept>
+#include <string>
+#include <utility>
 
+namespace autoware
+{
+namespace localization
+{
 namespace ndt
 {
+using CloudT = sensor_msgs::msg::PointCloud2;
+using Transform = geometry_msgs::msg::TransformStamped;
+using PoseWithCovarianceStamped = geometry_msgs::msg::PoseWithCovarianceStamped;
+using EigenPose = Eigen::Matrix<double, 6, 1>;
 
-/// Pose output bundled with a 6×6 covariance matrix.
+struct NDTLocalizerConfig
+{
+  int64_t guess_time_tolerance_ns = 100000000;
+};
+
 struct PoseWithCovariance
 {
   Eigen::Matrix<double, 6, 1> pose;   // tx, ty, tz, roll, pitch, yaw
@@ -27,17 +47,41 @@ struct PoseWithCovariance
 // ---------------------------------------------------------------------------
 
 /// Template base for NDT localisers.  MapT can be DynamicNDTMap or StaticNDTMap.
-template <typename MapT>
+template <
+  typename ScanT,
+  typename MapT,
+  typename NDTOptimizationProblemT,
+  typename OptimizerT>
 class NDTLocalizerBase
 {
 public:
-  explicit NDTLocalizerBase(const OptimizerParams & params = {})
-  : optimizer_(params) {}
+  NDTLocalizerBase(
+    const NDTLocalizerConfig & config,
+    const NDTOptimizationProblemT & problem,
+    const OptimizerT & optimizer,
+    ScanT && scan,
+    MapT && map)
+  : config_{config},
+    problem_{problem},
+    optimizer_{optimizer},
+    scan_{std::forward<ScanT>(scan)},
+    map_{std::forward<MapT>(map)}{}
+  
 
   virtual ~NDTLocalizerBase() = default;
+  
+  // -- Map management (matches Autoware set_map_impl / insert_to_map_impl) --
+  void set_map(const CloudT & msg)
+  {
+    map_.clear();
+    map_.insert(msg);
+  }
 
-  /// Register the reference map.
-  void register_map(const MapT & map) { map_ = &map; }
+  /// Incrementally add points to the existing map
+  void insert_to_map(const CloudT & msg)
+  {
+    map_.insert(msg);
+  }
 
   /// Register the current LiDAR scan.
   void register_scan(P2DNDTScan && scan) { scan_ = std::move(scan); }
