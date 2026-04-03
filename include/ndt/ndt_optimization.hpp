@@ -3,77 +3,285 @@
 
 #include "ndt/ndt_map.hpp"
 #include "ndt/ndt_scan.hpp"
+#include "common/types.hpp"
 
 #include <Eigen/Core>
 #include <Eigen/Dense>
 
+#include <tuple>
+#include <type_traits>
+
+namespace autoware
+{
+namespace localization
+{
 namespace ndt
 {
 
-/// Result of a single P2D NDT score evaluation for one scan point against one voxel.
-/// All three quantities share intermediate terms, so they are computed together
-/// via a CachedExpression approach (Magnusson 2009, Section 6.2).
-struct P2DScore
-{
-  double score = 0.0;
-  Eigen::Matrix<double, 6, 1> gradient = Eigen::Matrix<double, 6, 1>::Zero();
-  Eigen::Matrix<double, 6, 6> hessian = Eigen::Matrix<double, 6, 6>::Zero();
-};
+// ============================================================================
+// Expression<Derived, DomainValueT> - CRTP interface
+// ============================================================================
 
-/// Computes the P2D NDT cost function, gradient, and Hessian for a given
-/// scan–map pair at a candidate transform.
-///
-/// The 6-DoF transform is parameterised as (tx, ty, tz, roll, pitch, yaw).
-class P2DOptimizationProblem
+/// CRTP base for objective expressions that provide score, Jacobian and Hessian
+///   - operator()(x) ->double                (score / cost)
+///   - jacobian(x)   ->Eigen::Matrix         (first derivative)
+///   - hessian(x)    ->Eigen::Matrix         (second derivative)
+template <typename Derived, typename DomainValueT>
+class Expression
 {
 public:
-  using Transform6D = Eigen::Matrix<double, 6, 1>;
+  using Value = DomainValueT;
+  
+  double operator()(const DomainValueT & x) const
+  {
+    return static_cast<const Derived &>(*this).score_(x);
+  }
 
-  P2DOptimizationProblem() = default;
+  auto jacobian(const DomainValueT & x) const
+  {
+    return static_cast<const Derived &>(*this).jacobian_(x);
+  }
+  
+  auto hessian(const DomainValueT & x) const
+  {
+    return static_cast<const Derived &>(*this).hessian_(x);
+  }
 
-  /// Evaluate the total score, gradient, and Hessian over all scan–voxel pairs.
-  ///
-  /// @param scan        Current LiDAR scan.
-  /// @param map         NDT map (either Dynamic or Static — accessed through lookup).
-  /// @param transform   Current 6-DoF pose estimate [tx, ty, tz, roll, pitch, yaw].
-  /// @param search_radius  Radius for voxel neighbourhood lookup.
-  /// @return Aggregated P2DScore.
-  P2DScore evaluate(
-    const P2DNDTScan & scan,
-    const DynamicNDTMap & map,
-    const Transform6D & transform,
-    double search_radius = 2.0) const;
+protected:
+  ~Expression() = default;
+};
 
-  /// Overload that accepts a StaticNDTMap.
-  P2DScore evaluate(
-    const P2DNDTScan & scan,
-    const StaticNDTMap & map,
-    const Transform6D & transform,
-    double search_radius = 2.0) const;
+// ============================================================================
+// OptimizationProblem<Derived, DomainValueT, ObjectiveT,
+//                      EqualityConstrainsT, InequalityConstraintsT>
+// ============================================================================
+
+/// CRTP base that bundles an objective expression with equality and inequality
+/// constraints (stored as std::tuple<>)
+template <
+  typename Derived,
+  typename DomainValueT,
+  typename ObjectiveT,
+  typename EqualityConstraintsT = std::tuple<>,
+  typename InequalityConstraintsT = std::tuple<>>
+class OptimizationProblem
+{
+public:
+  using DomainValue = DomainValueT;
+  using Objective = ObjectiveT;
+
+  explicit OptimizationProblem(
+    ObjectiveT objective,
+    EqualityConstraintsT eq = {},
+    InequalityConstraintsT ineq = {})
+  : m_objective(std::move(objective)),
+    m_equality_constraints(std::move(eq)),
+    m_inequality_constraints(std::move(ineq)) {}
+  
+  const ObjectiveT & objective() const noexcept { return m_objective; }
+  ObjectiveT & objective() noexcept { return m_objective; }
+
+  const EqualityConstraintsT & equality_constraints() const noexcept
+  {
+    return m_equality_constraints;
+  }
+
+  const InequalityConstraintsT & inequality_constraints() const noexcept
+  {
+    return m_inequality_constraints;
+  }
+
+protected:
+  ~OptimizationProblem() = default;
 
 private:
-  /// Compute the score contribution from a single (point, voxel) pair.
-  /// Uses the CachedExpression pattern: the exponential and its derivatives are
-  /// computed once and shared between score, gradient, and Hessian.
-  P2DScore score_point_voxel(
+  ObjectiveT m_objective;
+  EqualityConstraintsT m_equality_constraints;
+  InequalityConstraintsT m_inequality_constraints;
+};
+
+// =======================================================================
+// UnconstrainedOptimizationProblem - binds both constraint tuples to empty
+// =======================================================================
+
+/// Convenience base for problems with no equality or inequality constraints
+template <typename Derived, typename DomainValueT, typename ObjectiveT>
+class UnconstrainedOptimizationProblem
+  : public OptimizationProblem<
+      Derived, DomainValueT, ObjectiveT, std::tuple<>, std::tuple<>>
+{
+public:
+  using Base = OptimizationProblem<
+    Derived, DomainValueT, ObjectiveT, std::tuple<>, std::tuple<>>;
+
+  explicit UnconstrainedOptimizationProblem(ObjectiveT objective)
+  : Base(std::move(objective)) {}
+
+protected:
+  ~UnconstrainedOptimizationProblem() = default;
+};
+
+
+// ==========================================================================
+// P2DNDTObjective - concrete Expression for Point-to-Distribution NDT
+// ==========================================================================
+
+/// The P2D NDT cost function, computing score, Jacobian, and Hessian
+/// using the CachedExpression pattern (Magnusson 2009, Section 6.2)
+///
+/// All three quantities share intermediate exponential terms, so they are
+/// computed together for efficiency.
+using EigenPose = Eigen::Matrix<double, 6, 1>;
+
+class P2DNDTObjective
+  : public Expression<P2DNDTObjective, EigenPose>
+{
+public:
+  using DomainValue = EigenPose;
+
+  /// Bind a scan and map reference before evaluating
+  void set_scan(const P2DNDTScan * scan) { scan_ = scan; }
+
+  template <typename MapT>
+  void set_map(const MapT * map);
+  
+  void set_search_radius(double r) { search_radius_ = r; }
+
+  // -- Expression interface implementation --
+  
+  double score_(const DomainValue & x) const;
+
+  Eigen::Matrix<double, 6, 1> jacobian_(const DomainValue & x) const;
+  Eigen::Matrix<double, 6, 6> hessian_(const DomainValue & x) const;
+
+  /// Evaluate score, Jacobian, and Hessian in a single pass (preferred path).
+  struct Result
+  {
+    double score = 0.0;
+    Eigen::Matrix<double, 6, 1> gradient = Eigen::Matrix<double, 6, 1>::Zero();
+    Eigen::Matrix<double, 6, 6> hessian = Eigen::Matrix<double, 6, 6>::Zero();
+  };
+
+  template <typename MapT>
+  Result evaluate(
+    const P2DNDTScan & scan,
+    const MapT & map,
+    const DomainValue & transform,
+    double search_radius = 2.0) const;
+
+  /// Convert a 6-DoF vector into a 4x4 homogeneous transform.
+  static Eigen::Matrix4d to_matrix(const DomainValue & t);
+
+  /// Build the 3x6 Jacobian of a transformed point w.r.t. the 6-DoF parameters.
+  static Eigen::Matrix<double, 3, 6> point_jacobian(
+    const Eigen::Vector3d & point,
+    const DomainValue & transform);
+
+
+private:
+  /// Score contribution from a single (point, voxel) pair - CachedExpression
+  Result score_point_voxel(
     const Eigen::Vector3d & transformed_point,
     const Voxel & voxel,
     const Eigen::Matrix<double, 3, 6> & jacobian_of_point) const;
 
-  /// Build the 3×6 Jacobian of a transformed point w.r.t. the 6-DoF parameters.
-  static Eigen::Matrix<double, 3, 6> point_jacobian(
-    const Eigen::Vector3d & point,
-    const Transform6D & transform);
-
-  /// Convert a 6-DoF vector into a 4×4 homogeneous transform.
-  static Eigen::Matrix4d to_matrix(const Transform6D & t);
+  const P2DNDTScan * scan_ = nullptr;
+  double search_radius_ = 2.0;
 };
 
-// ---------------------------------------------------------------------------
-// Newton-style optimiser
-// ---------------------------------------------------------------------------
+// ============================================================================
+// P2DNDTOptimizationProblem - unconstrained problem wrapping the P2D objective
+// ============================================================================
 
-struct OptimizerParams
+class P2DNDTOptimizationProblem
+  : public UnconstrainedOptimizationProblem<
+      P2DNDTOptimizationProblem, EigenPose, P2DNDTObjective>
+{
+public:
+  P2DNDTOptimizationProblem()
+  : UnconstrainedOptimizationProblem(P2DNDTObjective{}) {}
+
+  explicit P2DNDTOptimizationProblem(P2DNDTObjective obj)
+  : UnconstrainedOptimizationProblem(std::move(obj)) {}
+
+  /// Convenience: evaluate the objective for a given scan, map, and transform.
+  template <typename MapT>
+  P2DNDTObjective::Result evaluate(
+    const P2DNDTScan & scan,
+    const MapT & map,
+    const EigenPose & transform,
+    double search_radius = 2.0) const
+  {
+    return objective().evaluate(scan, map, transform, search_radius);
+  }
+};
+
+// ==========================================================================
+// LineSearch<Derived> -- CRTP interface
+// ==========================================================================
+
+/// CRTP base for line search strategies that determine the step length
+template <typename Derived>
+class LineSearch
+{
+public:
+  /// Compute the step length given a direction, current value, gradient, etc.
+  double compute_step_length() const
+  {
+    return static_cast<const Derived &>(*this).compute_step_length_();
+  }
+
+protected:
+  ~LineSearch() = default;
+};
+
+/// Trivial line search that always returns a fixed step size.
+class FixedLineSearch : public LineSearch<FixedLineSearch>
+{
+public:
+  explicit FixedLineSearch(double step = 1.0) : step_(step) {}
+
+  double compute_step_length_() const { return step_; }
+
+private:
+  double step_;
+};
+
+
+// ===========================================================================
+// Optimizer<Derived, LineSearchT> — CRTP interface
+// ===========================================================================
+
+/// CRTP base for iterative optimisers.
+///   solve(problem, x0, x_out) runs the optimisation loop.
+template <typename Derived, typename LineSearchT>
+class Optimizer
+{
+public:
+  explicit Optimizer(LineSearchT line_search = {})
+  : line_search_(std::move(line_search)) {}
+
+  template <typename OptimizationProblemT>
+  void solve(
+    OptimizationProblemT & optimization_problem,
+    const EigenPose & x0,
+    EigenPose & x_out) const
+  {
+    static_cast<const Derived &>(*this).solve_(optimization_problem, x0, x_out);
+  }
+
+  const LineSearchT & line_search() const noexcept { return line_search_; }
+
+protected:
+  ~Optimizer() = default;
+  LineSearchT line_search_;
+};
+
+// ===========================================================================
+// NewtonsMethod — concrete Optimizer using Newton / Gauss-Newton steps
+// ===========================================================================
+
+struct NewtonsMethodParams
 {
   int max_iterations = 30;
   double step_size = 1.0;
@@ -81,33 +289,48 @@ struct OptimizerParams
   double score_epsilon = 1e-6; // convergence threshold on score change
 };
 
-/// A simple Newton / Gauss-Newton optimiser that uses the Hessian returned by
-/// the P2D cost function to iteratively refine a 6-DoF pose.
-class NewtonOptimizer
+template <typename LineSearchT = FixedLineSearch>
+class NewtonsMethod : public Optimizer<NewtonsMethod<LineSearchT>, LineSearchT>
 {
 public:
-  explicit NewtonOptimizer(const OptimizerParams & params = {});
+  using Base = Optimizer<NewtonsMethod<LineSearchT>, LineSearchT>;
+
+  explicit NewtonsMethod(
+    const NewtonsMethodParams & params = {},
+    LineSearchT line_search = {})
+  : Base(std::move(line_search)), params_(params) {}
 
   struct Result
   {
-    P2DOptimizationProblem::Transform6D transform;
+    EigenPose transform = EigenPose::Zero();
     double final_score = 0.0;
     int iterations = 0;
     bool converged = false;
   };
 
-  /// Run optimisation.
-  template <typename MapT>
+  /// Run Newton optimisation on an NDT problem.
+  template <typename ScanT, typename MapT>
   Result optimize(
-    const P2DNDTScan & scan,
+    const ScanT & scan,
     const MapT & map,
-    const P2DOptimizationProblem::Transform6D & initial_estimate,
-    const P2DOptimizationProblem & problem) const;
+    const EigenPose & initial_estimate,
+    const P2DNDTOptimizationProblem & problem) const;
+
+  const NewtonsMethodParams & params() const noexcept { return params_; }
 
 private:
-  OptimizerParams params_;
+  NewtonsMethodParams params_;
 };
 
+// ---------------------------------------------------------------------------
+// Backward-compatible aliases
+// ---------------------------------------------------------------------------
+using OptimizerParams = NewtonsMethodParams;
+using NewtonOptimizer = NewtonsMethod<FixedLineSearch>;
+using P2DOptimizationProblem = P2DNDTOptimizationProblem;
+
 }  // namespace ndt
+}  // namespace localization
+}  // namespace autoware
 
 #endif  // NDT__NDT_OPTIMIZATION_HPP_
