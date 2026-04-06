@@ -1,5 +1,12 @@
 {
     "python.analysis.extraPaths": [
         "/opt/ros/humble/lib/python3.10/site-packages"
+    ],
+    "cmake.environment": {
+        "AMENT_PREFIX_PATH": "/opt/ros/humble",
+        "CMAKE_PREFIX_PATH": "/opt/ros/humble"
+    },
+    "cmake.configureArgs": [
+        "-DCMAKE_PREFIX_PATH=/opt/ros/humble"
     ]
 }
