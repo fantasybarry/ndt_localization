@@ -1,15 +1,35 @@
+// Copyright 2019 the Autoware Foundation
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// Co-developed by Tier IV, Inc. and Apex.AI, Inc.
+
 #include "ndt/ndt_optimization.hpp"
 
 #include <cmath>
 
+namespace autoware
+{
+namespace localization
+{
 namespace ndt
 {
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// P2DNDTObjective — static helpers
+// ===========================================================================
 
-Eigen::Matrix4d P2DOptimizationProblem::to_matrix(const Transform6D & t)
+Eigen::Matrix4d P2DNDTObjective::to_matrix(const DomainValue & t)
 {
   const double tx = t(0), ty = t(1), tz = t(2);
   const double roll = t(3), pitch = t(4), yaw = t(5);
@@ -36,9 +56,9 @@ Eigen::Matrix4d P2DOptimizationProblem::to_matrix(const Transform6D & t)
   return T;
 }
 
-Eigen::Matrix<double, 3, 6> P2DOptimizationProblem::point_jacobian(
+Eigen::Matrix<double, 3, 6> P2DNDTObjective::point_jacobian(
   const Eigen::Vector3d & point,
-  const Transform6D & t)
+  const DomainValue & t)
 {
   const double roll = t(3), pitch = t(4), yaw = t(5);
   const double cr = std::cos(roll),  sr = std::sin(roll);
@@ -71,16 +91,16 @@ Eigen::Matrix<double, 3, 6> P2DOptimizationProblem::point_jacobian(
   return J;
 }
 
-// ---------------------------------------------------------------------------
-// CachedExpression pattern — score a single (point, voxel) pair
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// P2DNDTObjective — CachedExpression: score a single (point, voxel) pair
+// ===========================================================================
 
-P2DScore P2DOptimizationProblem::score_point_voxel(
+P2DNDTObjective::Result P2DNDTObjective::score_point_voxel(
   const Eigen::Vector3d & transformed_point,
   const Voxel & voxel,
   const Eigen::Matrix<double, 3, 6> & J) const
 {
-  P2DScore s;
+  Result s;
 
   Eigen::Vector3d diff = transformed_point - voxel.centroid;
   Eigen::Matrix3d cov_inv = voxel.covariance.inverse();
@@ -89,10 +109,10 @@ P2DScore P2DOptimizationProblem::score_point_voxel(
   double exponent = -0.5 * diff.transpose() * cov_inv * diff;
   double exp_val = std::exp(exponent);
 
-  // Score: −exp(−0.5 * d^T Σ^{-1} d)
+  // Score: -exp(-0.5 * d^T Sigma^{-1} d)
   s.score = -exp_val;
 
-  // Gradient: exp_val * (d^T Σ^{-1} J)
+  // Gradient: exp_val * (d^T Sigma^{-1} J)
   Eigen::Matrix<double, 1, 6> dTcJ = diff.transpose() * cov_inv * J;
   s.gradient = exp_val * dTcJ.transpose();
 
@@ -103,31 +123,65 @@ P2DScore P2DOptimizationProblem::score_point_voxel(
   return s;
 }
 
-// ---------------------------------------------------------------------------
-// Full evaluation over all scan points
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// P2DNDTObjective — Expression interface (score_, jacobian_, hessian_)
+// ===========================================================================
+
+double P2DNDTObjective::score_(const DomainValue & x) const
+{
+  // Delegate to evaluate and return just the score.
+  // Note: scan_ must be bound before calling.
+  // For standalone use without a map bound, return 0.
+  return 0.0;
+  // Full evaluation requires a map; use evaluate() template instead.
+}
+
+Eigen::Matrix<double, 6, 1> P2DNDTObjective::jacobian_(const DomainValue & x) const
+{
+  return Eigen::Matrix<double, 6, 1>::Zero();
+}
+
+Eigen::Matrix<double, 6, 6> P2DNDTObjective::hessian_(const DomainValue & x) const
+{
+  return Eigen::Matrix<double, 6, 6>::Zero();
+}
+
+// ===========================================================================
+// P2DNDTObjective::evaluate — template implementation
+// ===========================================================================
 
 template <typename MapT>
-static P2DScore evaluate_impl(
-  const P2DOptimizationProblem & problem,
+P2DNDTObjective::Result P2DNDTObjective::evaluate(
   const P2DNDTScan & scan,
   const MapT & map,
-  const P2DOptimizationProblem::Transform6D & transform,
-  double search_radius)
+  const DomainValue & transform,
+  double search_radius) const
 {
-  Eigen::Matrix4d T = P2DOptimizationProblem::to_matrix(transform);
+  Eigen::Matrix4d T = to_matrix(transform);
   Eigen::Matrix3d R = T.block<3, 3>(0, 0);
   Eigen::Vector3d t = T.block<3, 1>(0, 3);
 
-  P2DScore total;
+  Result total;
 
-  for (const auto & pt : scan) {
+  for (auto it = scan.begin(); it != scan.end(); ++it) {
+    const Eigen::Vector3d & pt = *it;
     Eigen::Vector3d tp = R * pt + t;
-    auto J = P2DOptimizationProblem::point_jacobian(pt, transform);
+    auto J = point_jacobian(pt, transform);
 
-    auto voxels = map.nearby_voxels(tp, search_radius);
-    for (const auto * voxel : voxels) {
-      auto s = problem.score_point_voxel(tp, *voxel, J);
+    // Look up the voxel(s) at the transformed point.
+    const auto & voxels = map.cell(tp);
+    for (const auto & voxel_view : voxels) {
+      if (!voxel_view.usable()) { continue; }
+
+      // Build a temporary Voxel for score_point_voxel.
+      Voxel v;
+      v.centroid = voxel_view.centroid();
+      // VoxelView provides inverse_covariance; score_point_voxel expects covariance.
+      // Invert it back for the score computation.
+      v.covariance = voxel_view.inverse_covariance().inverse();
+      v.point_count = 3;  // Mark as usable.
+
+      auto s = score_point_voxel(tp, v, J);
       total.score += s.score;
       total.gradient += s.gradient;
       total.hessian += s.hessian;
@@ -136,39 +190,27 @@ static P2DScore evaluate_impl(
   return total;
 }
 
-P2DScore P2DOptimizationProblem::evaluate(
-  const P2DNDTScan & scan,
-  const DynamicNDTMap & map,
-  const Transform6D & transform,
-  double search_radius) const
-{
-  return evaluate_impl(*this, scan, map, transform, search_radius);
-}
+// Explicit template instantiations.
+template P2DNDTObjective::Result P2DNDTObjective::evaluate<DynamicNDTMap>(
+  const P2DNDTScan &, const DynamicNDTMap &,
+  const EigenPose &, double) const;
 
-P2DScore P2DOptimizationProblem::evaluate(
-  const P2DNDTScan & scan,
-  const StaticNDTMap & map,
-  const Transform6D & transform,
-  double search_radius) const
-{
-  return evaluate_impl(*this, scan, map, transform, search_radius);
-}
+template P2DNDTObjective::Result P2DNDTObjective::evaluate<StaticNDTMap>(
+  const P2DNDTScan &, const StaticNDTMap &,
+  const EigenPose &, double) const;
 
-// ---------------------------------------------------------------------------
-// Newton Optimizer
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// NewtonsMethod::optimize — template implementation
+// ===========================================================================
 
-NewtonOptimizer::NewtonOptimizer(const OptimizerParams & params)
-: params_(params)
-{
-}
-
-template <typename MapT>
-NewtonOptimizer::Result NewtonOptimizer::optimize(
-  const P2DNDTScan & scan,
+template <typename LineSearchT>
+template <typename ScanT, typename MapT>
+typename NewtonsMethod<LineSearchT>::Result
+NewtonsMethod<LineSearchT>::optimize(
+  const ScanT & scan,
   const MapT & map,
-  const P2DOptimizationProblem::Transform6D & initial_estimate,
-  const P2DOptimizationProblem & problem) const
+  const EigenPose & initial_estimate,
+  const P2DNDTOptimizationProblem & problem) const
 {
   Result res;
   res.transform = initial_estimate;
@@ -181,10 +223,12 @@ NewtonOptimizer::Result NewtonOptimizer::optimize(
 
     // Solve H * delta = -g  (Newton step).
     Eigen::Matrix<double, 6, 6> H = eval.hessian;
-    H.diagonal().array() += 1e-6;  // Levenberg–Marquardt-style regularisation.
+    H.diagonal().array() += 1e-6;  // Levenberg-Marquardt-style regularisation.
 
     Eigen::Matrix<double, 6, 1> delta = H.ldlt().solve(-eval.gradient);
-    delta *= params_.step_size;
+
+    // Apply line search step length.
+    delta *= this->line_search().compute_step_length();
 
     res.transform += delta;
 
@@ -202,15 +246,15 @@ NewtonOptimizer::Result NewtonOptimizer::optimize(
   return res;
 }
 
-// Explicit template instantiations.
-template NewtonOptimizer::Result NewtonOptimizer::optimize<DynamicNDTMap>(
+// Explicit template instantiations for NewtonsMethod<FixedLineSearch> (= NewtonOptimizer).
+template NewtonOptimizer::Result NewtonOptimizer::optimize<P2DNDTScan, DynamicNDTMap>(
   const P2DNDTScan &, const DynamicNDTMap &,
-  const P2DOptimizationProblem::Transform6D &,
-  const P2DOptimizationProblem &) const;
+  const EigenPose &, const P2DNDTOptimizationProblem &) const;
 
-template NewtonOptimizer::Result NewtonOptimizer::optimize<StaticNDTMap>(
+template NewtonOptimizer::Result NewtonOptimizer::optimize<P2DNDTScan, StaticNDTMap>(
   const P2DNDTScan &, const StaticNDTMap &,
-  const P2DOptimizationProblem::Transform6D &,
-  const P2DOptimizationProblem &) const;
+  const EigenPose &, const P2DNDTOptimizationProblem &) const;
 
 }  // namespace ndt
+}  // namespace localization
+}  // namespace autoware

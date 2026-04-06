@@ -1,0 +1,28 @@
+/**:
+  ros__parameters:
+    map_frame: "map"
+    base_frame: "base_link"
+    odom_frame: "odom"
+
+    # Optimizer
+    max_iterations: 30
+    step_size: 1.0
+    epsilon: 0.0001
+    score_threshold: 2.0
+
+    # Scan
+    scan_capacity: 55000
+    search_radius: 2.0
+
+    # NDT map voxel grid
+    map:
+      min_x: -500.0
+      min_y: -500.0
+      min_z: -10.0
+      max_x: 500.0
+      max_y: 500.0
+      max_z: 50.0
+      voxel_x: 1.0
+      voxel_y: 1.0
+      voxel_z: 1.0
+      capacity: 1000000

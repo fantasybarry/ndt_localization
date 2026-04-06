@@ -20,6 +20,8 @@
 #include <ndt/ndt_common.hpp>
 #include <ndt/ndt_voxel.hpp>
 #include <ndt/ndt_voxel_view.hpp>
+#include <helper_functions/crtp.hpp>
+#include <autoware/perception/filters/voxel_grid/config.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <time_utils/time_utils.hpp>
 #include <limits>
@@ -28,6 +30,7 @@
 #include <string>
 #include <vector>
 #include "common/types.hpp"
+#include "common/geometry/point_adapter.hpp"
 
 #include <Eigen/Core>
 #include <Eigen/Dense>
