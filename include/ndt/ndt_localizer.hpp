@@ -27,7 +27,7 @@ namespace ndt
 using CloudT = sensor_msgs::msg::PointCloud2;
 using Transform = geometry_msgs::msg::TransformStamped;
 using PoseWithCovarianceStamped = geometry_msgs::msg::PoseWithCovarianceStamped;
-using EigenPose = Eigen::Matrix<double, 6, 1>;
+// EigenPose is defined in ndt_common.hpp (via ndt_map.hpp).
 
 struct NDTLocalizerConfig
 {
@@ -160,7 +160,7 @@ public:
     // Fill covariance array from Eigen matrix.
     for (int r = 0; r < 6; ++r){
       for (int c = 0; c < 6; ++c) {
-        pose_out.pose.covariance[static_case<size_t>(r * 6 + c)] = result.covariance(r, c);
+        pose_out.pose.covariance[static_cast<size_t>(r * 6 + c)] = result.covariance(r, c);
       }
     }
   }
@@ -189,7 +189,7 @@ protected:
   
   /// Validate that the scan timestamp is not older than the map
   virtual void validate_msg(const CloudT & msg) const{
-    const auto msg_sec = msg.header.stamp.sec();
+    const auto msg_sec = msg.header.stamp.sec;
     const auto map_sec = map_.stamp_sec();
     if (msg_sec < map_sec){
       throw std::logic_error(
@@ -206,7 +206,7 @@ protected:
     const int64_t scan_ns = 
       static_cast<int64_t>(msg.header.stamp.sec) * 1000000000LL + msg.header.stamp.nanosec;
     const int64_t guess_ns = 
-      static_case<int64_t>(transform_initial.header.stamp.sec) * 1000000000LL + transform_initial.header.stamp.nanosec;
+      static_cast<int64_t>(transform_initial.header.stamp.sec) * 1000000000LL + transform_initial.header.stamp.nanosec;
 
     if (std::abs(guess_ns - scan_ns) > config_.guess_time_tolerance_ns) {
       throw std::domain_error(
@@ -301,19 +301,12 @@ protected:
     const P2DOptimizationProblem & problem,
     const EigenPose & /*initial_guess*/,
     const EigenPose & pose_result,
-    PoseWithCovarianceStamped & solution) const override
+    PoseWithCovariance & output) const override
   {
     auto eval = problem.evaluate(this->scan(), this->map(), pose_result);
     Eigen::Matrix<double, 6, 6> H = eval.hessian;
     H.diagonal().array() += 1e-6;
-    Eigen::Matrix<double, 6, 6> cov = H.inverse();
-
-    // Fill the 6x6 row-major covariance array in the ROS message.
-    for (int r = 0; r < 6; ++r) {
-      for (int c = 0; c < 6; ++c) {
-        solution.pose.covariance[static_cast<size_t>(r * 6 + c)] = cov(r, c);
-      }
-    }
+    output.covariance = H.inverse();
   }  
 };
 

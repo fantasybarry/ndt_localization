@@ -131,7 +131,7 @@ protected:
 ///
 /// All three quantities share intermediate exponential terms, so they are
 /// computed together for efficiency.
-using EigenPose = Eigen::Matrix<double, 6, 1>;
+// EigenPose is defined in ndt_common.hpp (via ndt_map.hpp).
 
 class P2DNDTObjective
   : public Expression<P2DNDTObjective, EigenPose>
@@ -179,10 +179,12 @@ public:
 
 
 private:
-  /// Score contribution from a single (point, voxel) pair - CachedExpression
+  /// Score contribution from a single (point, voxel) pair - CachedExpression.
+  /// Takes the centroid and inverse covariance directly to avoid double-inversion.
   Result score_point_voxel(
     const Eigen::Vector3d & transformed_point,
-    const Voxel & voxel,
+    const Eigen::Vector3d & centroid,
+    const Eigen::Matrix3d & cov_inv,
     const Eigen::Matrix<double, 3, 6> & jacobian_of_point) const;
 
   const P2DNDTScan * scan_ = nullptr;
@@ -314,7 +316,37 @@ public:
     const ScanT & scan,
     const MapT & map,
     const EigenPose & initial_estimate,
-    const P2DNDTOptimizationProblem & problem) const;
+    const P2DNDTOptimizationProblem & problem) const
+  {
+    Result res;
+    res.transform = initial_estimate;
+    double prev_score = 0.0;
+
+    for (int i = 0; i < params_.max_iterations; ++i) {
+      auto eval = problem.evaluate(scan, map, res.transform);
+      res.final_score = eval.score;
+      res.iterations = i + 1;
+
+      Eigen::Matrix<double, 6, 6> H = eval.hessian;
+      H.diagonal().array() += 1e-6;
+
+      Eigen::Matrix<double, 6, 1> delta = H.ldlt().solve(-eval.gradient);
+      delta *= this->line_search().compute_step_length();
+
+      res.transform += delta;
+
+      if (delta.norm() < params_.epsilon) {
+        res.converged = true;
+        break;
+      }
+      if (i > 0 && std::abs(eval.score - prev_score) < params_.score_epsilon) {
+        res.converged = true;
+        break;
+      }
+      prev_score = eval.score;
+    }
+    return res;
+  }
 
   const NewtonsMethodParams & params() const noexcept { return params_; }
 

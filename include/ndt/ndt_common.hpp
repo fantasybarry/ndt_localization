@@ -19,8 +19,7 @@ using autoware::common::types::float64_t;
 using Real = float64_t;
 
 /// 6-DoF pose vector: [tx, ty, tz, roll, pitch, yaw].
-template<typename T>
-using EigenPose = Eigen::Matrix<T, 6, 1>;
+using EigenPose = Eigen::Matrix<Real, 6, 1>;
 
 }  // namespace ndt
 }  // namespace localization

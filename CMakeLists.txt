@@ -12,6 +12,9 @@ find_package(builtin_interfaces REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common io filters)
@@ -110,6 +113,9 @@ ament_target_dependencies(p2d_ndt_localizer_exe
   rclcpp
   sensor_msgs
   geometry_msgs
+  std_msgs
+  diagnostic_msgs
+  visualization_msgs
   tf2
   tf2_ros
   tf2_geometry_msgs

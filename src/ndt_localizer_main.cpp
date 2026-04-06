@@ -8,9 +8,8 @@ int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
 
-  using LocalizerNode = autoware::localization::ndt_nodes::P2DNDTLocalizerNode<>;
-
-  auto node = std::make_shared<LocalizerNode>(
+  auto node = std::make_shared<
+    autoware::localization::ndt_nodes::P2DNDTLocalizerNode>(
     "p2d_ndt_localizer", "localization");
 
   rclcpp::spin(node);

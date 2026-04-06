@@ -14,6 +14,9 @@
     scan_capacity: 55000
     search_radius: 2.0
 
+    # GNSS regularization
+    regularization_scale: 0.01
+
     # NDT map voxel grid
     map:
       min_x: -500.0

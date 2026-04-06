@@ -97,13 +97,13 @@ Eigen::Matrix<double, 3, 6> P2DNDTObjective::point_jacobian(
 
 P2DNDTObjective::Result P2DNDTObjective::score_point_voxel(
   const Eigen::Vector3d & transformed_point,
-  const Voxel & voxel,
+  const Eigen::Vector3d & centroid,
+  const Eigen::Matrix3d & cov_inv,
   const Eigen::Matrix<double, 3, 6> & J) const
 {
   Result s;
 
-  Eigen::Vector3d diff = transformed_point - voxel.centroid;
-  Eigen::Matrix3d cov_inv = voxel.covariance.inverse();
+  Eigen::Vector3d diff = transformed_point - centroid;
 
   // Cached intermediate: exponent and exponential (shared by score, grad, hessian).
   double exponent = -0.5 * diff.transpose() * cov_inv * diff;
@@ -173,15 +173,9 @@ P2DNDTObjective::Result P2DNDTObjective::evaluate(
     for (const auto & voxel_view : voxels) {
       if (!voxel_view.usable()) { continue; }
 
-      // Build a temporary Voxel for score_point_voxel.
-      Voxel v;
-      v.centroid = voxel_view.centroid();
-      // VoxelView provides inverse_covariance; score_point_voxel expects covariance.
-      // Invert it back for the score computation.
-      v.covariance = voxel_view.inverse_covariance().inverse();
-      v.point_count = 3;  // Mark as usable.
-
-      auto s = score_point_voxel(tp, v, J);
+      // Pass centroid and inverse covariance directly — no double inversion.
+      auto s = score_point_voxel(
+        tp, voxel_view.centroid(), voxel_view.inverse_covariance(), J);
       total.score += s.score;
       total.gradient += s.gradient;
       total.hessian += s.hessian;
@@ -199,61 +193,7 @@ template P2DNDTObjective::Result P2DNDTObjective::evaluate<StaticNDTMap>(
   const P2DNDTScan &, const StaticNDTMap &,
   const EigenPose &, double) const;
 
-// ===========================================================================
-// NewtonsMethod::optimize — template implementation
-// ===========================================================================
-
-template <typename LineSearchT>
-template <typename ScanT, typename MapT>
-typename NewtonsMethod<LineSearchT>::Result
-NewtonsMethod<LineSearchT>::optimize(
-  const ScanT & scan,
-  const MapT & map,
-  const EigenPose & initial_estimate,
-  const P2DNDTOptimizationProblem & problem) const
-{
-  Result res;
-  res.transform = initial_estimate;
-  double prev_score = 0.0;
-
-  for (int i = 0; i < params_.max_iterations; ++i) {
-    auto eval = problem.evaluate(scan, map, res.transform);
-    res.final_score = eval.score;
-    res.iterations = i + 1;
-
-    // Solve H * delta = -g  (Newton step).
-    Eigen::Matrix<double, 6, 6> H = eval.hessian;
-    H.diagonal().array() += 1e-6;  // Levenberg-Marquardt-style regularisation.
-
-    Eigen::Matrix<double, 6, 1> delta = H.ldlt().solve(-eval.gradient);
-
-    // Apply line search step length.
-    delta *= this->line_search().compute_step_length();
-
-    res.transform += delta;
-
-    // Check convergence.
-    if (delta.norm() < params_.epsilon) {
-      res.converged = true;
-      break;
-    }
-    if (i > 0 && std::abs(eval.score - prev_score) < params_.score_epsilon) {
-      res.converged = true;
-      break;
-    }
-    prev_score = eval.score;
-  }
-  return res;
-}
-
-// Explicit template instantiations for NewtonsMethod<FixedLineSearch> (= NewtonOptimizer).
-template NewtonOptimizer::Result NewtonOptimizer::optimize<P2DNDTScan, DynamicNDTMap>(
-  const P2DNDTScan &, const DynamicNDTMap &,
-  const EigenPose &, const P2DNDTOptimizationProblem &) const;
-
-template NewtonOptimizer::Result NewtonOptimizer::optimize<P2DNDTScan, StaticNDTMap>(
-  const P2DNDTScan &, const StaticNDTMap &,
-  const EigenPose &, const P2DNDTOptimizationProblem &) const;
+// NewtonsMethod::optimize is defined inline in the header (class template + member template).
 
 }  // namespace ndt
 }  // namespace localization
