@@ -30,6 +30,8 @@ def generate_launch_description():
             ('pointcloud_map', '/map/pointcloud_map'),
             ('ekf_pose_with_covariance', '/localization/pose_twist_fusion_filter/pose_with_covariance'),
             ('sensing/gnss/pose_with_covariance', '/sensing/gnss/pose_with_covariance'),
+            ('imu_raw', '/sensing/imu/imu_raw'),
+            ('odom', '/vehicle/odom'),
         ],
         output='screen',
     )

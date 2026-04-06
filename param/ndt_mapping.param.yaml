@@ -1,0 +1,32 @@
+/**:
+  ros__parameters:
+    map_frame: "map"
+    base_frame: "base_link"
+
+    # NDT parameters
+    ndt_res: 1.0
+    step_size: 0.1
+    trans_eps: 0.01
+    max_iterations: 30
+
+    # Scan filtering
+    voxel_leaf_size: 2.0
+    min_scan_range: 5.0
+    max_scan_range: 200.0
+    min_add_scan_shift: 1.0
+
+    # base_link -> lidar static transform
+    tf_x: 0.0
+    tf_y: 0.0
+    tf_z: 0.0
+    tf_roll: 0.0
+    tf_pitch: 0.0
+    tf_yaw: 0.0
+
+    # Sensor fusion
+    use_imu: false
+    use_odom: false
+    imu_upside_down: false
+
+    # Logging
+    enable_logging: true

@@ -2,7 +2,6 @@
   ros__parameters:
     map_frame: "map"
     base_frame: "base_link"
-    odom_frame: "odom"
 
     # Optimizer
     max_iterations: 30
@@ -16,6 +15,27 @@
 
     # GNSS regularization
     regularization_scale: 0.01
+
+    # Sensor fusion
+    use_imu: false
+    use_odom: false
+    imu_upside_down: false
+
+    # GNSS re-initialization threshold
+    gnss_reinit_fitness: 500.0
+
+    # base_link -> lidar static transform
+    tf_x: 0.0
+    tf_y: 0.0
+    tf_z: 0.0
+    tf_roll: 0.0
+    tf_pitch: 0.0
+    tf_yaw: 0.0
+
+    # NDT reliability metric weights
+    reliability_wa: 0.4
+    reliability_wb: 0.3
+    reliability_wc: 0.3
 
     # NDT map voxel grid
     map:

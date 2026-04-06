@@ -15,6 +15,7 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common io filters)
@@ -116,9 +117,40 @@ ament_target_dependencies(p2d_ndt_localizer_exe
   std_msgs
   diagnostic_msgs
   visualization_msgs
+  nav_msgs
   tf2
   tf2_ros
   tf2_geometry_msgs
+  pcl_conversions
+)
+
+# ---------------------------------------------------------------------------
+# NDT Mapping Node
+# ---------------------------------------------------------------------------
+add_executable(ndt_mapping_exe
+  src/ndt_mapping_node.cpp
+  src/ndt_mapping_main.cpp
+)
+
+target_include_directories(ndt_mapping_exe PRIVATE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  ${PCL_INCLUDE_DIRS}
+)
+
+target_link_libraries(ndt_mapping_exe
+  Eigen3::Eigen
+  ${PCL_LIBRARIES}
+)
+
+ament_target_dependencies(ndt_mapping_exe
+  rclcpp
+  sensor_msgs
+  geometry_msgs
+  nav_msgs
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+  pcl_conversions
 )
 
 # ---------------------------------------------------------------------------
@@ -127,6 +159,7 @@ ament_target_dependencies(p2d_ndt_localizer_exe
 install(TARGETS
   ndt_map_publisher_exe
   p2d_ndt_localizer_exe
+  ndt_mapping_exe
   DESTINATION lib/${PROJECT_NAME}
 )
 
