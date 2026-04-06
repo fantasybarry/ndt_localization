@@ -3,15 +3,19 @@
     map_yaml_file: "/path/to/map_info.yaml"
     map_frame: "map"
     subscriber_timeout_ms: 10000
+    viz_map: true
 
     map_config:
-      min_x: -500.0
-      min_y: -500.0
-      min_z: -10.0
-      max_x: 500.0
-      max_y: 500.0
-      max_z: 50.0
-      voxel_x: 1.0
-      voxel_y: 1.0
-      voxel_z: 1.0
+      min_point:
+        x: -500.0
+        y: -500.0
+        z: -10.0
+      max_point:
+        x: 500.0
+        y: 500.0
+        z: 50.0
+      voxel_size:
+        x: 1.0
+        y: 1.0
+        z: 1.0
       capacity: 1000000

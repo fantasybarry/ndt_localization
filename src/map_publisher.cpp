@@ -49,32 +49,34 @@ NDTMapPublisherNode::NDTMapPublisherNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<int>("subscriber_timeout_ms", 10000);
 
   // Voxel grid config parameters.
-  this->declare_parameter<double>("map_config.min_x", -500.0);
-  this->declare_parameter<double>("map_config.min_y", -500.0);
-  this->declare_parameter<double>("map_config.min_z", -10.0);
-  this->declare_parameter<double>("map_config.max_x", 500.0);
-  this->declare_parameter<double>("map_config.max_y", 500.0);
-  this->declare_parameter<double>("map_config.max_z", 50.0);
-  this->declare_parameter<double>("map_config.voxel_x", 1.0);
-  this->declare_parameter<double>("map_config.voxel_y", 1.0);
-  this->declare_parameter<double>("map_config.voxel_z", 1.0);
+  this->declare_parameter<double>("map_config.min_point.x", -500.0);
+  this->declare_parameter<double>("map_config.min_point.y", -500.0);
+  this->declare_parameter<double>("map_config.min_point.z", -10.0);
+  this->declare_parameter<double>("map_config.max_point.x", 500.0);
+  this->declare_parameter<double>("map_config.max_point.y", 500.0);
+  this->declare_parameter<double>("map_config.max_point.z", 50.0);
+  this->declare_parameter<double>("map_config.voxel_size.x", 1.0);
+  this->declare_parameter<double>("map_config.voxel_size.y", 1.0);
+  this->declare_parameter<double>("map_config.voxel_size.z", 1.0);
   this->declare_parameter<int>("map_config.capacity", 1000000);
+  this->declare_parameter<bool>("viz_map", true);
 
   yaml_file_path_ = this->get_parameter("map_yaml_file").as_string();
   map_frame_ = this->get_parameter("map_frame").as_string();
+  viz_map_ = this->get_parameter("viz_map").as_bool();
 
   Eigen::Vector3d min_pt(
-    this->get_parameter("map_config.min_x").as_double(),
-    this->get_parameter("map_config.min_y").as_double(),
-    this->get_parameter("map_config.min_z").as_double());
+    this->get_parameter("map_config.min_point.x").as_double(),
+    this->get_parameter("map_config.min_point.y").as_double(),
+    this->get_parameter("map_config.min_point.z").as_double());
   Eigen::Vector3d max_pt(
-    this->get_parameter("map_config.max_x").as_double(),
-    this->get_parameter("map_config.max_y").as_double(),
-    this->get_parameter("map_config.max_z").as_double());
+    this->get_parameter("map_config.max_point.x").as_double(),
+    this->get_parameter("map_config.max_point.y").as_double(),
+    this->get_parameter("map_config.max_point.z").as_double());
   Eigen::Vector3d voxel_size(
-    this->get_parameter("map_config.voxel_x").as_double(),
-    this->get_parameter("map_config.voxel_y").as_double(),
-    this->get_parameter("map_config.voxel_z").as_double());
+    this->get_parameter("map_config.voxel_size.x").as_double(),
+    this->get_parameter("map_config.voxel_size.y").as_double(),
+    this->get_parameter("map_config.voxel_size.z").as_double());
   auto capacity = static_cast<std::size_t>(
     this->get_parameter("map_config.capacity").as_int());
 
@@ -112,12 +114,14 @@ void NDTMapPublisherNode::run()
   ndt_map_pub_->publish(ndt_cloud);
   RCLCPP_INFO(this->get_logger(), "Published NDT map (%u voxels)", ndt_cloud.width);
 
-  // 6. Publish visualisation cloud.
-  auto viz_cloud = downsample_for_viz(raw_cloud);
-  viz_cloud.header.frame_id = map_frame_;
-  viz_cloud.header.stamp = this->now();
-  viz_map_pub_->publish(viz_cloud);
-  RCLCPP_INFO(this->get_logger(), "Published visualization map (%u points)", viz_cloud.width);
+  // 6. Publish visualisation cloud (if enabled).
+  if (viz_map_) {
+    auto viz_cloud = downsample_for_viz(raw_cloud);
+    viz_cloud.header.frame_id = map_frame_;
+    viz_cloud.header.stamp = this->now();
+    viz_map_pub_->publish(viz_cloud);
+    RCLCPP_INFO(this->get_logger(), "Published visualization map (%u points)", viz_cloud.width);
+  }
 }
 
 void NDTMapPublisherNode::load_yaml_config()

@@ -88,6 +88,7 @@ private:
   std::string yaml_file_path_;
   std::string pcd_file_path_;
   std::string map_frame_;
+  bool viz_map_ = true;
 
   // Geodetic origin from YAML.
   double origin_lat_ = 0.0;

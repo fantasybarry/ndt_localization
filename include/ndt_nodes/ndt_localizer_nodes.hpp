@@ -138,16 +138,16 @@ public:
     this->declare_parameter<double>("reliability_wc", 0.3);
 
     // Voxel grid config for the NDT map.
-    this->declare_parameter<double>("map.min_x", -500.0);
-    this->declare_parameter<double>("map.min_y", -500.0);
-    this->declare_parameter<double>("map.min_z", -10.0);
-    this->declare_parameter<double>("map.max_x", 500.0);
-    this->declare_parameter<double>("map.max_y", 500.0);
-    this->declare_parameter<double>("map.max_z", 50.0);
-    this->declare_parameter<double>("map.voxel_x", 1.0);
-    this->declare_parameter<double>("map.voxel_y", 1.0);
-    this->declare_parameter<double>("map.voxel_z", 1.0);
-    this->declare_parameter<int>("map.capacity", 1000000);
+    this->declare_parameter<double>("map_config.min_point.x", -500.0);
+    this->declare_parameter<double>("map_config.min_point.y", -500.0);
+    this->declare_parameter<double>("map_config.min_point.z", -10.0);
+    this->declare_parameter<double>("map_config.max_point.x", 500.0);
+    this->declare_parameter<double>("map_config.max_point.y", 500.0);
+    this->declare_parameter<double>("map_config.max_point.z", 50.0);
+    this->declare_parameter<double>("map_config.voxel_size.x", 1.0);
+    this->declare_parameter<double>("map_config.voxel_size.y", 1.0);
+    this->declare_parameter<double>("map_config.voxel_size.z", 1.0);
+    this->declare_parameter<int>("map_config.capacity", 1000000);
 
     map_frame_ = this->get_parameter("map_frame").as_string();
     base_frame_ = this->get_parameter("base_frame").as_string();
@@ -192,18 +192,18 @@ public:
 
     // Build map config.
     Eigen::Vector3d min_pt(
-      this->get_parameter("map.min_x").as_double(),
-      this->get_parameter("map.min_y").as_double(),
-      this->get_parameter("map.min_z").as_double());
+      this->get_parameter("map_config.min_point.x").as_double(),
+      this->get_parameter("map_config.min_point.y").as_double(),
+      this->get_parameter("map_config.min_point.z").as_double());
     Eigen::Vector3d max_pt(
-      this->get_parameter("map.max_x").as_double(),
-      this->get_parameter("map.max_y").as_double(),
-      this->get_parameter("map.max_z").as_double());
+      this->get_parameter("map_config.max_point.x").as_double(),
+      this->get_parameter("map_config.max_point.y").as_double(),
+      this->get_parameter("map_config.max_point.z").as_double());
     Eigen::Vector3d voxel_size(
-      this->get_parameter("map.voxel_x").as_double(),
-      this->get_parameter("map.voxel_y").as_double(),
-      this->get_parameter("map.voxel_z").as_double());
-    auto capacity = static_cast<std::size_t>(this->get_parameter("map.capacity").as_int());
+      this->get_parameter("map_config.voxel_size.x").as_double(),
+      this->get_parameter("map_config.voxel_size.y").as_double(),
+      this->get_parameter("map_config.voxel_size.z").as_double());
+    auto capacity = static_cast<std::size_t>(this->get_parameter("map_config.capacity").as_int());
 
     map_config_ = std::make_shared<autoware::perception::filters::voxel_grid::Config>(
       min_pt, max_pt, voxel_size, capacity);
