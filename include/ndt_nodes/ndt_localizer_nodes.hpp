@@ -17,11 +17,6 @@
 #ifndef NDT_NODES__NDT_LOCALIZER_NODES_HPP_
 #define NDT_NODES__NDT_LOCALIZER_NODES_HPP_
 
-#include <ndt/ndt_localizer.hpp>
-#include <ndt/ndt_map.hpp>
-#include <ndt/ndt_scan.hpp>
-#include <ndt/ndt_optimization.hpp>
-
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/imu.hpp>
@@ -37,6 +32,13 @@
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <tf2_ros/transform_broadcaster.h>
+
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+#include <pcl/filters/voxel_grid.h>
+#include <pcl/filters/filter.h>
+#include <pcl/registration/ndt.h>
+#include <pcl_conversions/pcl_conversions.h>
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
@@ -99,8 +101,6 @@ public:
   using TwistStamped = geometry_msgs::msg::TwistStamped;
   using Transform = geometry_msgs::msg::TransformStamped;
 
-  static constexpr auto EPS = std::numeric_limits<ndt::Real>::epsilon();
-
   P2DNDTLocalizerNode(
     const std::string & node_name,
     const std::string & name_space)
@@ -114,9 +114,9 @@ public:
     this->declare_parameter<double>("step_size", 1.0);
     this->declare_parameter<double>("epsilon", 1e-4);
     this->declare_parameter<double>("score_threshold", 2.0);
-    this->declare_parameter<int>("scan_capacity", 55000);
-    this->declare_parameter<double>("search_radius", 2.0);
-    this->declare_parameter<double>("regularization_scale", 0.01);
+    this->declare_parameter<double>("ndt_resolution", 1.0);
+    this->declare_parameter<double>("scan_voxel_leaf_size", 2.0);
+    this->declare_parameter<double>("predict_pose_threshold", 15.0);
 
     // IMU / Odom / GNSS feature flags.
     this->declare_parameter<bool>("use_imu", false);
@@ -137,24 +137,11 @@ public:
     this->declare_parameter<double>("reliability_wb", 0.3);
     this->declare_parameter<double>("reliability_wc", 0.3);
 
-    // Voxel grid config for the NDT map.
-    this->declare_parameter<double>("map_config.min_point.x", -500.0);
-    this->declare_parameter<double>("map_config.min_point.y", -500.0);
-    this->declare_parameter<double>("map_config.min_point.z", -10.0);
-    this->declare_parameter<double>("map_config.max_point.x", 500.0);
-    this->declare_parameter<double>("map_config.max_point.y", 500.0);
-    this->declare_parameter<double>("map_config.max_point.z", 50.0);
-    this->declare_parameter<double>("map_config.voxel_size.x", 1.0);
-    this->declare_parameter<double>("map_config.voxel_size.y", 1.0);
-    this->declare_parameter<double>("map_config.voxel_size.z", 1.0);
-    this->declare_parameter<int>("map_config.capacity", 1000000);
-
     map_frame_ = this->get_parameter("map_frame").as_string();
     base_frame_ = this->get_parameter("base_frame").as_string();
     score_threshold_ = this->get_parameter("score_threshold").as_double();
-    scan_capacity_ = static_cast<std::size_t>(this->get_parameter("scan_capacity").as_int());
-    search_radius_ = this->get_parameter("search_radius").as_double();
-    regularization_scale_ = this->get_parameter("regularization_scale").as_double();
+    scan_voxel_leaf_size_ = this->get_parameter("scan_voxel_leaf_size").as_double();
+    predict_pose_threshold_ = this->get_parameter("predict_pose_threshold").as_double();
 
     use_imu_ = this->get_parameter("use_imu").as_bool();
     use_odom_ = this->get_parameter("use_odom").as_bool();
@@ -183,30 +170,11 @@ public:
                         r != 0.0f || p != 0.0f || y != 0.0f);
     }
 
-    // Build optimizer.
-    ndt::NewtonsMethodParams opt_params;
-    opt_params.max_iterations = this->get_parameter("max_iterations").as_int();
-    opt_params.step_size = this->get_parameter("step_size").as_double();
-    opt_params.epsilon = this->get_parameter("epsilon").as_double();
-    optimizer_ = std::make_unique<ndt::NewtonOptimizer>(opt_params);
-
-    // Build map config.
-    Eigen::Vector3d min_pt(
-      this->get_parameter("map_config.min_point.x").as_double(),
-      this->get_parameter("map_config.min_point.y").as_double(),
-      this->get_parameter("map_config.min_point.z").as_double());
-    Eigen::Vector3d max_pt(
-      this->get_parameter("map_config.max_point.x").as_double(),
-      this->get_parameter("map_config.max_point.y").as_double(),
-      this->get_parameter("map_config.max_point.z").as_double());
-    Eigen::Vector3d voxel_size(
-      this->get_parameter("map_config.voxel_size.x").as_double(),
-      this->get_parameter("map_config.voxel_size.y").as_double(),
-      this->get_parameter("map_config.voxel_size.z").as_double());
-    auto capacity = static_cast<std::size_t>(this->get_parameter("map_config.capacity").as_int());
-
-    map_config_ = std::make_shared<autoware::perception::filters::voxel_grid::Config>(
-      min_pt, max_pt, voxel_size, capacity);
+    // Build PCL NDT.
+    ndt_.setMaximumIterations(this->get_parameter("max_iterations").as_int());
+    ndt_.setStepSize(this->get_parameter("step_size").as_double());
+    ndt_.setTransformationEpsilon(this->get_parameter("epsilon").as_double());
+    ndt_.setResolution(static_cast<float>(this->get_parameter("ndt_resolution").as_double()));
 
     // -- Publishers (output) --
     ndt_pose_pub_ = this->create_publisher<PoseStamped>(
@@ -303,9 +271,17 @@ private:
 
   void on_map(const CloudT & msg)
   {
+    if (map_received_) { return; }
     RCLCPP_INFO(this->get_logger(), "Received map with %u points", msg.width);
-    map_ = std::make_unique<ndt::StaticNDTMap>(*map_config_);
-    map_->insert(msg);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr map_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::fromROSMsg(msg, *map_cloud);
+
+    // Remove NaN points.
+    std::vector<int> indices;
+    pcl::removeNaNFromPointCloud(*map_cloud, *map_cloud, indices);
+
+    RCLCPP_INFO(this->get_logger(), "Setting NDT target with %zu points", map_cloud->size());
+    ndt_.setInputTarget(map_cloud);
     map_received_ = true;
   }
 
@@ -314,6 +290,7 @@ private:
     RCLCPP_INFO(this->get_logger(), "Received initial pose (EKF)");
     latest_pose_msg_ = msg;
     init_pose_received_ = true;
+    first_ndt_accepted_ = false;
 
     // Reset pose state from the initial pose.
     previous_pose_ = pose_msg_to_6d(msg);
@@ -344,6 +321,9 @@ private:
 
   void on_imu(const sensor_msgs::msg::Imu & msg)
   {
+    // Don't accumulate IMU offsets until we have an initial pose and first scan time.
+    if (!init_pose_received_) { return; }
+
     sensor_msgs::msg::Imu imu = msg;
 
     if (imu_upside_down_) {
@@ -427,8 +407,23 @@ private:
       return;
     }
 
-    // Build scan.
-    ndt::P2DNDTScan scan(msg, scan_capacity_);
+    // Downsample scan with VoxelGrid filter.
+    pcl::PointCloud<pcl::PointXYZ>::Ptr scan_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::fromROSMsg(msg, *scan_cloud);
+
+    // Remove NaN points.
+    std::vector<int> indices;
+    pcl::removeNaNFromPointCloud(*scan_cloud, *scan_cloud, indices);
+
+    if (scan_voxel_leaf_size_ > 0.0) {
+      pcl::VoxelGrid<pcl::PointXYZ> voxel_filter;
+      voxel_filter.setInputCloud(scan_cloud);
+      float leaf = static_cast<float>(scan_voxel_leaf_size_);
+      voxel_filter.setLeafSize(leaf, leaf, leaf);
+      pcl::PointCloud<pcl::PointXYZ>::Ptr filtered(new pcl::PointCloud<pcl::PointXYZ>);
+      voxel_filter.filter(*filtered);
+      scan_cloud = filtered;
+    }
 
     // -- Compute initial guess with IMU/Odom/linear prediction --
     double diff_time = scan_time_init_
@@ -443,16 +438,25 @@ private:
     predict_pose.pitch = previous_pose_.pitch;
     predict_pose.yaw = previous_pose_.yaw + angular_velocity_ * diff_time;
 
-    // Run IMU/Odom prediction if enabled.
-    if (use_imu_ && use_odom_) { imu_odom_calc(current_scan_time); }
-    else if (use_imu_) { imu_calc(current_scan_time); }
-    else if (use_odom_) { odom_calc(current_scan_time); }
-
+    // Run IMU/Odom prediction if enabled (only after first scan processed).
     Pose6D predict_for_ndt;
-    if (use_imu_ && use_odom_) { predict_for_ndt = predict_pose_imu_odom_; }
-    else if (use_imu_) { predict_for_ndt = predict_pose_imu_; }
-    else if (use_odom_) { predict_for_ndt = predict_pose_odom_; }
-    else { predict_for_ndt = predict_pose; }
+    if (!scan_time_init_) {
+      // First scan: use previous pose directly (no prediction).
+      predict_for_ndt = previous_pose_;
+      // Reset IMU/Odom accumulators so they start fresh from this scan.
+      reset_offsets();
+      imu_time_init_ = false;
+      odom_time_init_ = false;
+    } else {
+      if (use_imu_ && use_odom_) { imu_odom_calc(current_scan_time); }
+      else if (use_imu_) { imu_calc(current_scan_time); }
+      else if (use_odom_) { odom_calc(current_scan_time); }
+
+      if (use_imu_ && use_odom_) { predict_for_ndt = predict_pose_imu_odom_; }
+      else if (use_imu_) { predict_for_ndt = predict_pose_imu_; }
+      else if (use_odom_) { predict_for_ndt = predict_pose_odom_; }
+      else { predict_for_ndt = predict_pose; }
+    }
 
     // Publish predict_pose (debug).
     {
@@ -463,8 +467,8 @@ private:
       predict_pose_pub_->publish(pm);
     }
 
-    // Convert to Eigen for optimizer.
-    ndt::EigenPose initial_guess = pose6d_to_eigen(predict_for_ndt);
+    // Build initial guess as 4x4 matrix.
+    Eigen::Matrix4f initial_guess = pose6d_to_matrix4f(predict_for_ndt);
 
     // Publish initial pose used (debug).
     {
@@ -475,30 +479,76 @@ private:
       initial_pose_with_cov_pub_->publish(ip);
     }
 
-    // -- Run NDT optimization --
-    ndt::P2DNDTOptimizationProblem problem;
-    auto result = optimizer_->optimize(scan, *map_, initial_guess, problem);
+    // -- Run PCL NDT alignment --
+    ndt_.setInputSource(scan_cloud);
+    pcl::PointCloud<pcl::PointXYZ> aligned_cloud;
+    ndt_.align(aligned_cloud, initial_guess);
 
     auto t_end = std::chrono::steady_clock::now();
     double exe_time = std::chrono::duration<double, std::milli>(t_end - t_start).count();
 
-    last_fitness_score_ = std::abs(result.final_score);
+    bool converged = ndt_.hasConverged();
+    int iterations = ndt_.getFinalNumIteration();
+    double fitness_score = ndt_.getFitnessScore();
+    double transform_probability = ndt_.getTransformationProbability();
 
-    if (!result.converged) {
-      RCLCPP_WARN(this->get_logger(), "NDT did not converge");
+    last_fitness_score_ = fitness_score;
+
+    RCLCPP_DEBUG(this->get_logger(),
+      "NDT iter=%d fitness=%.4f prob=%.4f converged=%d exe=%.1fms pts=%zu",
+      iterations, fitness_score, transform_probability, converged, exe_time,
+      scan_cloud->size());
+
+    if (!converged) {
+      RCLCPP_WARN(this->get_logger(), "NDT did not converge (iter=%d)", iterations);
       publish_diagnostics("NDT did not converge", false);
       return;
     }
 
-    // -- Extract result pose --
-    Pose6D ndt_result = eigen_to_pose6d(result.transform);
-    current_pose_ = ndt_result;
+    // Reject poor matches based on fitness score (mean squared nearest-neighbor distance).
+    if (fitness_score > score_threshold_) {
+      RCLCPP_WARN(this->get_logger(),
+        "NDT fitness too high (%.2f > %.2f), rejecting", fitness_score, score_threshold_);
+      publish_diagnostics("NDT fitness too high", false);
+      return;
+    }
 
-    // Compute covariance from inverse Hessian.
-    auto eval = problem.evaluate(scan, *map_, result.transform, search_radius_);
-    Eigen::Matrix<double, 6, 6> H = eval.hessian;
-    H.diagonal().array() += 1e-6;
-    Eigen::Matrix<double, 6, 6> cov = H.inverse();
+    // -- Extract result pose --
+    Eigen::Matrix4f result_matrix = ndt_.getFinalTransformation();
+    Pose6D ndt_result = matrix4f_to_pose6d(result_matrix);
+
+    // Log distance from prediction for diagnostics.
+    double dist_predict = std::sqrt(
+      std::pow(ndt_result.x - predict_for_ndt.x, 2) +
+      std::pow(ndt_result.y - predict_for_ndt.y, 2) +
+      std::pow(ndt_result.z - predict_for_ndt.z, 2));
+
+    // Predict-pose threshold: reject if NDT result deviates too far from prediction.
+    // Skip on first scan — initial pose may be approximate.
+    if (first_ndt_accepted_ && dist_predict > predict_pose_threshold_) {
+      RCLCPP_WARN(this->get_logger(),
+        "NDT result too far from prediction (%.2f > %.2f), rejecting",
+        dist_predict, predict_pose_threshold_);
+      publish_diagnostics("NDT result rejected (too far from prediction)", false);
+      return;
+    }
+
+    current_pose_ = ndt_result;
+    if (!first_ndt_accepted_) {
+      RCLCPP_INFO(this->get_logger(), "First NDT lock-on at (%.2f, %.2f, %.2f)",
+        ndt_result.x, ndt_result.y, ndt_result.z);
+      first_ndt_accepted_ = true;
+    }
+
+    RCLCPP_DEBUG(this->get_logger(),
+      "NDT pose: (%.3f, %.3f, %.3f) rpy=(%.3f, %.3f, %.3f) dist_predict=%.2f",
+      ndt_result.x, ndt_result.y, ndt_result.z,
+      ndt_result.roll, ndt_result.pitch, ndt_result.yaw, dist_predict);
+
+    // Covariance estimate: scale diagonal by fitness score.
+    // Lower fitness = better match = smaller covariance.
+    double cov_scale = std::max(fitness_score, 0.01);
+    Eigen::Matrix<double, 6, 6> cov = Eigen::Matrix<double, 6, 6>::Identity() * cov_scale;
 
     // -- Publish ndt_pose (PoseStamped) --
     PoseStamped pose_stamped;
@@ -571,7 +621,7 @@ private:
 
     // transform_probability (NDT score)
     std_msgs::msg::Float64 score_msg;
-    score_msg.data = result.final_score;
+    score_msg.data = transform_probability;
     transform_probability_pub_->publish(score_msg);
     no_ground_transform_probability_pub_->publish(score_msg);
     nvtl_pub_->publish(score_msg);
@@ -579,26 +629,26 @@ private:
 
     // iteration_num
     std_msgs::msg::Int32 iter_msg;
-    iter_msg.data = result.iterations;
+    iter_msg.data = iterations;
     iteration_num_pub_->publish(iter_msg);
 
     // NDT reliability: Wa*(exe/100)*100 + Wb*(iter/10)*100 + Wc*((2-prob)/2)*100
-    double trans_prob = std::abs(result.final_score);
+    double trans_prob = std::min(fitness_score, 2.0);
     std_msgs::msg::Float32 rel_msg;
     rel_msg.data = static_cast<float>(
       Wa_ * (exe_time / 100.0) * 100.0 +
-      Wb_ * (static_cast<double>(result.iterations) / 10.0) * 100.0 +
-      Wc_ * ((2.0 - std::min(trans_prob, 2.0)) / 2.0) * 100.0);
+      Wb_ * (static_cast<double>(iterations) / 10.0) * 100.0 +
+      Wc_ * ((2.0 - trans_prob) / 2.0) * 100.0);
     ndt_reliability_pub_->publish(rel_msg);
 
-    // initial_to_result_distance
+    // initial_to_result_distance (using Pose6D values)
     double dist_3d = std::sqrt(
-      std::pow(result.transform(0) - initial_guess(0), 2) +
-      std::pow(result.transform(1) - initial_guess(1), 2) +
-      std::pow(result.transform(2) - initial_guess(2), 2));
+      std::pow(ndt_result.x - predict_for_ndt.x, 2) +
+      std::pow(ndt_result.y - predict_for_ndt.y, 2) +
+      std::pow(ndt_result.z - predict_for_ndt.z, 2));
     double dist_2d = std::sqrt(
-      std::pow(result.transform(0) - initial_guess(0), 2) +
-      std::pow(result.transform(1) - initial_guess(1), 2));
+      std::pow(ndt_result.x - predict_for_ndt.x, 2) +
+      std::pow(ndt_result.y - predict_for_ndt.y, 2));
 
     std_msgs::msg::Float32 dist_msg;
     dist_msg.data = static_cast<float>(dist_3d);
@@ -614,12 +664,12 @@ private:
       PoseStamped rp;
       rp.header = pose_stamped.header;
       Pose6D rel;
-      rel.x = result.transform(0) - initial_guess(0);
-      rel.y = result.transform(1) - initial_guess(1);
-      rel.z = result.transform(2) - initial_guess(2);
-      rel.roll = result.transform(3) - initial_guess(3);
-      rel.pitch = result.transform(4) - initial_guess(4);
-      rel.yaw = result.transform(5) - initial_guess(5);
+      rel.x = ndt_result.x - predict_for_ndt.x;
+      rel.y = ndt_result.y - predict_for_ndt.y;
+      rel.z = ndt_result.z - predict_for_ndt.z;
+      rel.roll = ndt_result.roll - predict_for_ndt.roll;
+      rel.pitch = ndt_result.pitch - predict_for_ndt.pitch;
+      rel.yaw = ndt_result.yaw - predict_for_ndt.yaw;
       pose6d_to_msg(rel, rp.pose);
       initial_to_result_relative_pose_pub_->publish(rp);
     }
@@ -652,47 +702,26 @@ private:
       return;
     }
     double dt = (current_time - prev_imu_time_).seconds();
-    if (dt <= 0.0) { return; }
+    if (dt <= 0.0 || dt > 1.0) {
+      prev_imu_time_ = current_time;
+      return;
+    }
 
-    double dr = imu_msg_.angular_velocity.x * dt;
-    double dp = imu_msg_.angular_velocity.y * dt;
+    // Only use angular velocity for orientation prediction.
+    // Skip acceleration double-integration to avoid gravity-induced drift.
     double dy = imu_msg_.angular_velocity.z * dt;
-
-    current_pose_imu_.roll += dr;
-    current_pose_imu_.pitch += dp;
-    current_pose_imu_.yaw += dy;
-
-    double aX1 = imu_msg_.linear_acceleration.x;
-    double aY1 = std::cos(current_pose_imu_.roll) * imu_msg_.linear_acceleration.y -
-                 std::sin(current_pose_imu_.roll) * imu_msg_.linear_acceleration.z;
-    double aZ1 = std::sin(current_pose_imu_.roll) * imu_msg_.linear_acceleration.y +
-                 std::cos(current_pose_imu_.roll) * imu_msg_.linear_acceleration.z;
-
-    double aX2 = std::sin(current_pose_imu_.pitch) * aZ1 + std::cos(current_pose_imu_.pitch) * aX1;
-    double aY2 = aY1;
-    double aZ2 = std::cos(current_pose_imu_.pitch) * aZ1 - std::sin(current_pose_imu_.pitch) * aX1;
-
-    double aX = std::cos(current_pose_imu_.yaw) * aX2 - std::sin(current_pose_imu_.yaw) * aY2;
-    double aY = std::sin(current_pose_imu_.yaw) * aX2 + std::cos(current_pose_imu_.yaw) * aY2;
-    double aZ = aZ2;
-
-    offset_imu_x_ += current_velocity_imu_x_ * dt + aX * dt * dt / 2.0;
-    offset_imu_y_ += current_velocity_imu_y_ * dt + aY * dt * dt / 2.0;
-    offset_imu_z_ += current_velocity_imu_z_ * dt + aZ * dt * dt / 2.0;
-
-    current_velocity_imu_x_ += aX * dt;
-    current_velocity_imu_y_ += aY * dt;
-    current_velocity_imu_z_ += aZ * dt;
-
-    offset_imu_roll_ += dr;
-    offset_imu_pitch_ += dp;
     offset_imu_yaw_ += dy;
+
+    // Use velocity from previous NDT match for position extrapolation.
+    offset_imu_x_ += current_velocity_x_ * dt;
+    offset_imu_y_ += current_velocity_y_ * dt;
+    offset_imu_z_ += current_velocity_z_ * dt;
 
     predict_pose_imu_.x = previous_pose_.x + offset_imu_x_;
     predict_pose_imu_.y = previous_pose_.y + offset_imu_y_;
     predict_pose_imu_.z = previous_pose_.z + offset_imu_z_;
-    predict_pose_imu_.roll = previous_pose_.roll + offset_imu_roll_;
-    predict_pose_imu_.pitch = previous_pose_.pitch + offset_imu_pitch_;
+    predict_pose_imu_.roll = previous_pose_.roll;
+    predict_pose_imu_.pitch = previous_pose_.pitch;
     predict_pose_imu_.yaw = previous_pose_.yaw + offset_imu_yaw_;
 
     prev_imu_time_ = current_time;
@@ -827,19 +856,26 @@ private:
     return p;
   }
 
-  static ndt::EigenPose pose6d_to_eigen(const Pose6D & p)
+  static Eigen::Matrix4f pose6d_to_matrix4f(const Pose6D & p)
   {
-    ndt::EigenPose e = ndt::EigenPose::Zero();
-    e(0) = p.x; e(1) = p.y; e(2) = p.z;
-    e(3) = p.roll; e(4) = p.pitch; e(5) = p.yaw;
-    return e;
+    Eigen::AngleAxisf rx(static_cast<float>(p.roll), Eigen::Vector3f::UnitX());
+    Eigen::AngleAxisf ry(static_cast<float>(p.pitch), Eigen::Vector3f::UnitY());
+    Eigen::AngleAxisf rz(static_cast<float>(p.yaw), Eigen::Vector3f::UnitZ());
+    Eigen::Translation3f tl(
+      static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z));
+    return (tl * rz * ry * rx).matrix();
   }
 
-  static Pose6D eigen_to_pose6d(const ndt::EigenPose & e)
+  static Pose6D matrix4f_to_pose6d(const Eigen::Matrix4f & m)
   {
     Pose6D p;
-    p.x = e(0); p.y = e(1); p.z = e(2);
-    p.roll = e(3); p.pitch = e(4); p.yaw = e(5);
+    p.x = static_cast<double>(m(0, 3));
+    p.y = static_cast<double>(m(1, 3));
+    p.z = static_cast<double>(m(2, 3));
+    // Extract Euler angles (ZYX convention).
+    p.roll = static_cast<double>(std::atan2(m(2, 1), m(2, 2)));
+    p.pitch = static_cast<double>(std::asin(-m(2, 0)));
+    p.yaw = static_cast<double>(std::atan2(m(1, 0), m(0, 0)));
     return p;
   }
 
@@ -859,10 +895,8 @@ private:
 
   // ---- Members ----
 
-  // Core NDT.
-  std::unique_ptr<ndt::NewtonOptimizer> optimizer_;
-  std::unique_ptr<ndt::StaticNDTMap> map_;
-  std::shared_ptr<autoware::perception::filters::voxel_grid::Config> map_config_;
+  // Core NDT (PCL).
+  pcl::NormalDistributionsTransform<pcl::PointXYZ, pcl::PointXYZ> ndt_;
   tf2_ros::TransformBroadcaster tf_broadcaster_;
 
   // base_link ↔ lidar transform.
@@ -963,11 +997,11 @@ private:
   std::string base_frame_;
   bool map_received_ = false;
   bool init_pose_received_ = false;
+  bool first_ndt_accepted_ = false;
   bool gnss_received_ = false;
   double score_threshold_ = 2.0;
-  std::size_t scan_capacity_ = 55000;
-  double search_radius_ = 2.0;
-  double regularization_scale_ = 0.01;
+  double scan_voxel_leaf_size_ = 2.0;
+  double predict_pose_threshold_ = 15.0;
 };
 
 }  // namespace ndt_nodes

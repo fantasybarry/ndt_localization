@@ -1,6 +1,7 @@
 /**:
   ros__parameters:
-    map_yaml_file: "/path/to/map_info.yaml"
+    map_pcd_file: "/home/mila/Desktop/pointcloud_map.pcd"
+    map_yaml_file: "/home/mila/ndt_localization/param/map_info.yaml"
     map_frame: "map"
     subscriber_timeout_ms: 10000
     viz_map: true

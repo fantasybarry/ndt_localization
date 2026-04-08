@@ -7,6 +7,7 @@
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <time_utils/time_utils.hpp>
 #include <Eigen/Core>
+#include <cmath>
 #include <vector>
 #include "common/types.hpp"
 
@@ -126,13 +127,20 @@ public:
       y_it != y_it.end() &&
       z_it != z_it.end())
     {
-      if (m_points.size() == m_points.capacity()) {
-        throw std::length_error(container_full_error);
-      }
-      m_points.emplace_back(*x_it, *y_it, *z_it);
+      const float32_t px = *x_it, py = *y_it, pz = *z_it;
       ++x_it;
       ++y_it;
       ++z_it;
+
+      // Skip NaN / Inf points (common in non-dense clouds).
+      if (!std::isfinite(px) || !std::isfinite(py) || !std::isfinite(pz)) {
+        continue;
+      }
+
+      if (m_points.size() == m_points.capacity()) {
+        throw std::length_error(container_full_error);
+      }
+      m_points.emplace_back(px, py, pz);
     }
   }
 

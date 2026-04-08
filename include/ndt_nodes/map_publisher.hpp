@@ -81,6 +81,7 @@ private:
 
   // Publishers.
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr ndt_map_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr raw_map_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr viz_map_pub_;
   std::unique_ptr<tf2_ros::StaticTransformBroadcaster> static_tf_pub_;
 
@@ -100,6 +101,10 @@ private:
 
   // Voxel grid config for the NDT map.
   std::shared_ptr<MapConfig> map_config_;
+
+  // Cached viz cloud for periodic re-publishing.
+  sensor_msgs::msg::PointCloud2 viz_cloud_;
+  rclcpp::TimerBase::SharedPtr viz_timer_;
 };
 
 }  // namespace ndt_nodes

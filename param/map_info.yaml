@@ -1,0 +1,8 @@
+map_config:
+  pcd_file: "/home/mila/Desktop/pointcloud_map.pcd"
+  latitude: 35.208700925037455
+  longitude: -97.44274284195036
+  elevation: 328.8458982912779
+  roll: 0.0
+  pitch: 0.0
+  yaw: 0.0

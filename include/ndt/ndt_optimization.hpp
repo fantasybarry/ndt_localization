@@ -288,7 +288,7 @@ struct NewtonsMethodParams
   int max_iterations = 30;
   double step_size = 1.0;
   double epsilon = 1e-4;       // convergence threshold on parameter change
-  double score_epsilon = 1e-6; // convergence threshold on score change
+  double score_epsilon = 0.001; // convergence threshold on score change
 };
 
 template <typename LineSearchT = FixedLineSearch>
@@ -330,10 +330,22 @@ public:
       Eigen::Matrix<double, 6, 6> H = eval.hessian;
       H.diagonal().array() += 1e-6;
 
-      Eigen::Matrix<double, 6, 1> delta = H.ldlt().solve(-eval.gradient);
-      delta *= this->line_search().compute_step_length();
+      Eigen::Matrix<double, 6, 1> direction = H.ldlt().solve(-eval.gradient);
 
-      res.transform += delta;
+      // Backtracking line search: find step that improves score.
+      double alpha = this->line_search().compute_step_length();
+      Eigen::Matrix<double, 6, 1> delta = alpha * direction;
+      EigenPose candidate = res.transform + delta;
+      auto candidate_eval = problem.evaluate(scan, map, candidate);
+
+      // If full step doesn't improve, shrink until it does (max 5 halvings).
+      for (int ls = 0; ls < 5 && candidate_eval.score > eval.score; ++ls) {
+        alpha *= 0.5;
+        delta = alpha * direction;
+        candidate = res.transform + delta;
+        candidate_eval = problem.evaluate(scan, map, candidate);
+      }
+      res.transform = candidate;
 
       if (delta.norm() < params_.epsilon) {
         res.converged = true;

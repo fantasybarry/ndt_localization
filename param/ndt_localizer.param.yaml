@@ -3,21 +3,21 @@
     map_frame: "map"
     base_frame: "base_link"
 
-    # Optimizer
+    # NDT optimizer (PCL NormalDistributionsTransform)
     max_iterations: 30
-    step_size: 1.0
-    epsilon: 0.0001
-    score_threshold: 2.0
+    step_size: 0.1
+    epsilon: 0.001
+    ndt_resolution: 3.0
+    score_threshold: 30.0
 
-    # Scan
-    scan_capacity: 55000
-    search_radius: 2.0
+    # Scan preprocessing
+    scan_voxel_leaf_size: 2.0
 
-    # GNSS regularization
-    regularization_scale: 0.01
+    # Predict-pose threshold: reject NDT results deviating more than this (meters)
+    predict_pose_threshold: 15.0
 
     # Sensor fusion
-    use_imu: false
+    use_imu: true
     use_odom: false
     imu_upside_down: false
 
@@ -36,19 +36,3 @@
     reliability_wa: 0.4
     reliability_wb: 0.3
     reliability_wc: 0.3
-
-    # NDT map voxel grid
-    map_config:
-      min_point:
-        x: -500.0
-        y: -500.0
-        z: -10.0
-      max_point:
-        x: 500.0
-        y: 500.0
-        z: 50.0
-      voxel_size:
-        x: 1.0
-        y: 1.0
-        z: 1.0
-      capacity: 1000000

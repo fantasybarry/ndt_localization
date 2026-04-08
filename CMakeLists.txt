@@ -18,7 +18,7 @@ find_package(visualization_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(PCL REQUIRED COMPONENTS common io filters)
+find_package(PCL REQUIRED COMPONENTS common io filters registration)
 find_package(yaml-cpp REQUIRED)
 
 # Try to find GeographicLib via cmake config or pkg-config.
@@ -106,8 +106,8 @@ target_include_directories(p2d_ndt_localizer_exe PRIVATE
 )
 
 target_link_libraries(p2d_ndt_localizer_exe
-  ndt
   Eigen3::Eigen
+  ${PCL_LIBRARIES}
 )
 
 ament_target_dependencies(p2d_ndt_localizer_exe

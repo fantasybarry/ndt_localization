@@ -83,10 +83,15 @@ NDTMapPublisherNode::NDTMapPublisherNode(const rclcpp::NodeOptions & options)
   map_config_ = std::make_shared<MapConfig>(min_pt, max_pt, voxel_size, capacity);
 
   // Publishers.
+  // ndt_map uses transient_local so the localizer gets it even if it subscribes late.
   ndt_map_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
     "ndt_map", rclcpp::QoS{1}.transient_local());
+  // pointcloud_map: raw XYZ cloud for PCL-based localizers (transient_local).
+  raw_map_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+    "pointcloud_map", rclcpp::QoS{1}.transient_local());
+  // viz_ndt_map uses reliable+volatile so RViz2 can display it without QoS config.
   viz_map_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
-    "viz_ndt_map", rclcpp::QoS{1}.transient_local());
+    "viz_ndt_map", rclcpp::QoS{1}.reliable());
   static_tf_pub_ = std::make_unique<tf2_ros::StaticTransformBroadcaster>(*this);
 }
 
@@ -104,11 +109,15 @@ void NDTMapPublisherNode::run()
   raw_cloud.header.frame_id = map_frame_;
   raw_cloud.header.stamp = this->now();
 
-  // 4. Build NDT map.
+  // 4. Publish raw pointcloud map (for PCL-based localizers).
+  raw_map_pub_->publish(raw_cloud);
+  RCLCPP_INFO(this->get_logger(), "Published raw pointcloud map (%u points)", raw_cloud.width);
+
+  // 5. Build NDT map.
   RCLCPP_INFO(this->get_logger(), "Building NDT map...");
   auto ndt_cloud = build_ndt_map(raw_cloud);
 
-  // 5. Publish NDT map.
+  // 6. Publish NDT map.
   ndt_cloud.header.frame_id = map_frame_;
   ndt_cloud.header.stamp = this->now();
   ndt_map_pub_->publish(ndt_cloud);
@@ -116,11 +125,19 @@ void NDTMapPublisherNode::run()
 
   // 6. Publish visualisation cloud (if enabled).
   if (viz_map_) {
-    auto viz_cloud = downsample_for_viz(raw_cloud);
-    viz_cloud.header.frame_id = map_frame_;
-    viz_cloud.header.stamp = this->now();
-    viz_map_pub_->publish(viz_cloud);
-    RCLCPP_INFO(this->get_logger(), "Published visualization map (%u points)", viz_cloud.width);
+    viz_cloud_ = downsample_for_viz(raw_cloud);
+    viz_cloud_.header.frame_id = map_frame_;
+    viz_cloud_.header.stamp = this->now();
+    viz_map_pub_->publish(viz_cloud_);
+    RCLCPP_INFO(this->get_logger(), "Published visualization map (%u points)", viz_cloud_.width);
+
+    // Re-publish every 5 seconds so RViz can pick it up.
+    viz_timer_ = this->create_wall_timer(
+      std::chrono::seconds(5),
+      [this]() {
+        viz_cloud_.header.stamp = this->now();
+        viz_map_pub_->publish(viz_cloud_);
+      });
   }
 }
 

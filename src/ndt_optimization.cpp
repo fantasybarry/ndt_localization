@@ -162,7 +162,6 @@ P2DNDTObjective::Result P2DNDTObjective::evaluate(
   Eigen::Vector3d t = T.block<3, 1>(0, 3);
 
   Result total;
-
   for (auto it = scan.begin(); it != scan.end(); ++it) {
     const Eigen::Vector3d & pt = *it;
     Eigen::Vector3d tp = R * pt + t;
