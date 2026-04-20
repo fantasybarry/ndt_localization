@@ -1,17 +1,18 @@
 /**:
   ros__parameters:
+    use_sim_time: true
     map_frame: "map"
     base_frame: "base_link"
 
     # NDT optimizer (PCL NormalDistributionsTransform)
     max_iterations: 30
-    step_size: 0.1
-    epsilon: 0.001
-    ndt_resolution: 3.0
-    score_threshold: 30.0
+    step_size: 0.5
+    epsilon: 0.01
+    ndt_resolution: 2.0
+    score_threshold: 500.0
 
     # Scan preprocessing
-    scan_voxel_leaf_size: 2.0
+    scan_voxel_leaf_size: 1.0
 
     # Predict-pose threshold: reject NDT results deviating more than this (meters)
     predict_pose_threshold: 15.0

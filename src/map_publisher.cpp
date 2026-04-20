@@ -89,9 +89,9 @@ NDTMapPublisherNode::NDTMapPublisherNode(const rclcpp::NodeOptions & options)
   // pointcloud_map: raw XYZ cloud for PCL-based localizers (transient_local).
   raw_map_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
     "pointcloud_map", rclcpp::QoS{1}.transient_local());
-  // viz_ndt_map uses reliable+volatile so RViz2 can display it without QoS config.
+  // viz_ndt_map uses transient_local so RViz2 always gets it even if it subscribes late.
   viz_map_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
-    "viz_ndt_map", rclcpp::QoS{1}.reliable());
+    "viz_ndt_map", rclcpp::QoS{1}.transient_local());
   static_tf_pub_ = std::make_unique<tf2_ros::StaticTransformBroadcaster>(*this);
 }
 

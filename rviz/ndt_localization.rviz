@@ -1,0 +1,119 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Line Style:
+        Value: Lines
+      Color: 160; 160; 164
+      Plane: XY
+      Plane Cell Count: 50
+      Cell Size: 5
+      Reference Frame: <Fixed Frame>
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Names: true
+      Show Axes: true
+      Show Arrows: false
+      Marker Scale: 3
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Map
+      Enabled: true
+      Topic:
+        Value: /localization/viz_ndt_map
+        Depth: 5
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+      Style: Points
+      Size (Pixels): 2
+      Color Transformer: AxisColor
+      Axis: Z
+      Use rainbow: true
+      Decay Time: 0
+      Alpha: 0.6
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Aligned Scan
+      Enabled: true
+      Topic:
+        Value: /localization/points_aligned
+        Depth: 1
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
+      Style: Points
+      Size (Pixels): 3
+      Color Transformer: FlatColor
+      Color: 255; 255; 0
+      Decay Time: 0
+      Alpha: 1
+    - Class: rviz_default_plugins/PoseWithCovariance
+      Name: NDT Pose
+      Enabled: true
+      Topic:
+        Value: /localization/ndt_pose_with_covariance
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+      Color: 0; 255; 0
+      Alpha: 1
+      Shaft Length: 1
+      Shaft Radius: 0.2
+      Head Length: 0.4
+      Head Radius: 0.4
+      Covariance:
+        Value: true
+        Position:
+          Value: true
+          Color: 204; 51; 204
+          Alpha: 0.3
+          Scale: 1
+        Orientation:
+          Value: true
+          Color: 255; 255; 127
+          Alpha: 0.5
+          Offset: 1
+          Scale: 1
+  Global Options:
+    Background Color: 30; 30; 30
+    Fixed Frame: map
+    Frame Rate: 30
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic:
+        Value: /initialpose
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 150
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Pitch: 1.2
+      Yaw: 0.785
+      Target Frame: <Fixed Frame>
+      Near Clip Distance: 0.01
+Window Geometry:
+  Height: 900
+  Width: 1600
+  Displays:
+    collapsed: false

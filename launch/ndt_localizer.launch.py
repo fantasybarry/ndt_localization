@@ -26,8 +26,7 @@ def generate_launch_description():
         namespace='localization',
         parameters=[localizer_param],
         remappings=[
-            ('points_raw', '/sensing/lidar/points_raw'),
-            ('pointcloud_map', '/map/pointcloud_map'),
+            ('points_raw', '/velodyne_points'),
             ('ekf_pose_with_covariance', '/localization/pose_twist_fusion_filter/pose_with_covariance'),
             ('sensing/gnss/pose_with_covariance', '/sensing/gnss/pose_with_covariance'),
             ('imu_raw', '/sensing/imu/imu_raw'),
