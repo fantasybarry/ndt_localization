@@ -29,7 +29,7 @@ def generate_launch_description():
             ('points_raw', '/velodyne_points'),
             ('ekf_pose_with_covariance', '/localization/pose_twist_fusion_filter/pose_with_covariance'),
             ('sensing/gnss/pose_with_covariance', '/sensing/gnss/pose_with_covariance'),
-            ('imu_raw', '/sensing/imu/imu_raw'),
+            ('imu_raw', '/imu/data'),
             ('odom', '/vehicle/odom'),
         ],
         output='screen',

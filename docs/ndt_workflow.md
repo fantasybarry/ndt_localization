@@ -109,6 +109,38 @@ Only **occupied** cells are actually stored, so for this project's map you end u
 
 They are built independently — the map side is what gets serialized and published on `/localization/ndt_map`; the alignment side is rebuilt internally by the localizer when it loads the map. Using a coarser 2 m resolution on the alignment side gives a larger basin of convergence (helpful when the initial pose guess is a few meters off), at the cost of slightly coarser fit.
 
+#### What the voxel grid actually does
+
+The voxel grid turns a messy 1.97 M-point cloud into something NDT can align against in milliseconds. It does three jobs at once:
+
+**(a) Compression — replace points with a probability field**
+
+Instead of storing every map point, each occupied cell stores just one Gaussian `(μᵢ, Σᵢ⁻¹)` that summarizes the *surface shape* inside that cell. The 1.97 M points collapse to ~98 k Gaussians (~20× smaller) while preserving the geometry that matters for alignment.
+
+**(b) O(1) lookup — no nearest-neighbor search**
+
+When a scan point `p` is transformed to `T·p`, its `(x, y, z)` maps to a voxel index by simple arithmetic:
+
+```
+ix = floor((x − min_x) / voxel_size)
+iy = floor((y − min_y) / voxel_size)
+iz = floor((z − min_z) / voxel_size)
+```
+
+That gives the Gaussian for that point in a single hash lookup. Compare with ICP, which must search a kd-tree over millions of points every iteration. **This is the main reason NDT is 10–50× faster than ICP.**
+
+**(c) Smoothing — turn discrete points into a differentiable surface**
+
+Raw points are noisy; you cannot differentiate "which point is closest?". But a Gaussian density
+
+```
+φ(x) = exp( −½ · (x − μ)ᵀ Σ⁻¹ (x − μ) )
+```
+
+is a smooth function with **analytic gradient and Hessian**. That is what lets Newton's method (Step B3) compute exact derivatives and converge in 3–10 iterations instead of hundreds.
+
+**In one sentence:** the voxel grid converts a point cloud into a smooth, queryable *likelihood landscape*. NDT then asks *how high does each scan point sit on that landscape?* for a candidate transform `T`, and slides `T` uphill using calculus — not search.
+
 ### Step A3 — For each voxel that has ≥ 5 points
 
 Let `{p₁, …, pₖ}` be the points of `M` that fall in voxel `Vᵢ`.
@@ -441,21 +473,67 @@ Best-Effort QoS on `points_aligned` prevents the publisher from blocking when a 
 
 ## 6. Per-scan timeline
 
-What happens in real time for a single lidar frame:
+This section answers *what happens, millisecond by millisecond, during one 100 ms slot of the localizer?*
+
+### The 100 ms budget
+
+Velodyne publishes at **10 Hz**, i.e. a new scan every **100 ms**. To keep up in real time, every stage of the pipeline must fit inside that 100 ms window. If it does not, scans queue up, latency grows, and the pose being published describes where the vehicle *was* seconds ago — which is useless for control.
+
+### The timeline
 
 ```
-t = 0    ms   new scan arrives in on_scan()
-t = 0–2  ms   preprocess (NaN, crop, voxel) + prediction + publish live scan at T₀
-t = 2    ms   if ndt_busy_ → drop this scan; else launch worker thread
+t =   0 ms    new scan arrives in on_scan()
+t =   0–2 ms  preprocess (NaN, crop, voxel) + prediction + publish live scan at T₀
+t =   2 ms    if ndt_busy_ → drop this scan; else launch worker thread
               (busy-flag is released as soon as PCL finishes, so post-processing
               never blocks the next scan)
-t = 5–35 ms   PCL NDT aligns inside the worker thread
-t ≈ 35   ms   extract pose, release busy flag
-t = 35–40 ms  fitness & prediction checks, update state, publish pose/TF
-t = 40+  ms   thread exits; next scan can already be running by this point
+t =   5–35 ms PCL NDT aligns inside the worker thread
+t ≈  35 ms    extract pose, release busy flag
+t =  35–40 ms fitness & prediction checks, update state, publish pose/TF
+t =  40+ ms   thread exits; next scan can already be running by this point
 ```
 
-Budget at 10 Hz = 100 ms per scan. Actual use in this project: ~30 ms + publish → plenty of headroom, typically ~3× real time.
+### What each milestone means
+
+**`t = 0 ms` — new scan arrives**
+ROS delivers a `PointCloud2` message to the localizer's subscriber callback (`on_scan()`). The clock for this scan starts here.
+
+**`t = 0–2 ms` — preprocess + predict + publish live scan**
+Three cheap, main-thread jobs:
+- **Preprocess**: strip NaNs, crop to ±80 m, voxel-downsample to 1 m (~100 k → ~29 k points). ~1 ms.
+- **Predict `T₀`**: `previous_pose + velocity × Δt` (plus IMU yaw if `use_imu` is true). Sub-microsecond.
+- **Publish live scan at `T₀`**: transform the raw scan with the predicted pose and publish it on `/points_aligned` for RViz so the vehicle marker does not freeze while NDT is still thinking. ~1 ms.
+
+**`t = 2 ms` — launch worker thread (or drop)**
+This is the **concurrency guard**. `ndt_busy_` is an atomic flag that is `true` while a previous scan's NDT is still optimizing.
+- If `ndt_busy_ == true` → drop this scan. Better to skip one frame than queue up and fall further behind.
+- Else → spawn a `std::thread` with snapshots of the scan and the prediction, and return from `on_scan()` immediately so the callback is free for the next scan.
+
+**`t = 5–35 ms` — NDT alignment (background thread)**
+The heavy part: Newton's method iterates 3–10 times against the ~98 k voxel Gaussians. Runs on a background thread so it does not block ROS callbacks. On this hardware with these parameters, typically ~30 ms.
+
+**`t ≈ 35 ms` — extract pose, release busy flag**
+As soon as `ndt_.align()` returns, the pose matrix is copied out of PCL's state and `ndt_busy_ = false` is set **immediately** — before any publishing, logging, or bookkeeping. This is deliberate: it lets the *next* scan's worker start right away, even while this thread is still doing its post-work.
+
+**`t = 35–40 ms` — checks + state update + publish pose/TF**
+- `fitness > 500` → reject (Check 1).
+- `‖result − prediction‖ > 15 m` → reject (Check 2).
+- Otherwise: update `previous_pose`, recompute velocity, publish `/ndt_pose_with_covariance`, broadcast `map → base_link` TF, emit diagnostics.
+
+**`t = 40+ ms` — thread exits**
+The worker ends. By this point the next scan (at `t = 100 ms`) has not even arrived yet — or, in an overloaded moment, a second worker may already be crunching on it because the busy flag was released early.
+
+### The headline
+
+| Metric | Value |
+|---|---|
+| Budget at 10 Hz | **100 ms/scan** |
+| Typical NDT time | ~30 ms |
+| Typical publish + checks | ~5 ms |
+| **Total per scan** | **~35 ms** |
+| Headroom | **~3×** real time |
+
+If NDT ever exceeds 100 ms (e.g. a very dense scan in a feature-rich area), the busy-flag mechanism drops the next incoming scan instead of queuing, so the pose output stays timely at the cost of one missed measurement — a much better failure mode than unbounded latency growth.
 
 ---
 
